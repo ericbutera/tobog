@@ -1,3 +1,8 @@
+// 
+// https://gobyexample.com
+// https://github.com/go-nut/gobot/blob/master/irc.go
+// http://stackoverflow.com/questions/13342128/simple-golang-irc-bot-keeps-timing-out
+// https://github.com/Autumn/irc.go
 package main
 
 import (
