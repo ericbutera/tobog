@@ -12,9 +12,10 @@ import (
   "net"
   "bufio"
   "strings"
-  //"time"
+  "time"
   "container/list"
   "net/textproto"
+  "math/rand"
   "encoding/json"
   redis "github.com/vmihailenco/redis"
 )
@@ -37,7 +38,6 @@ type Bot struct {
   recv chan *ServerResponse
   bot chan *Message
 
-  readsync, writesync chan bool
   err chan error
 
   conn net.Conn
@@ -55,88 +55,134 @@ func NewBot() *Bot {
     user: "moo",
     plugins: list.New(),
     chans: list.New(),
-    /*send: make(chan *SendMessage),
-    recv: make(chan *ServerResponse),
-    bot: make(chan *Message),*/
+    err: make(chan error),
     conn: nil}
 }
 
-func (bot *Bot) Read() {
+func (bot *Bot) Read(reconnect <-chan bool) {
   // reads messages from server
   for {
-    line, err := bot.reader.ReadLine()
-    if err != nil {
-      fmt.Println("bot.Read error ", err)
-      bot.err <- err
-    }
-    if (line[0:4] == "PING") {
-      bot.Cmd("PONG :%s", line[6:len(line)])
-    }
-    bot.recv <- &ServerResponse{msg: line}
-
     select {
-      case <-bot.readsync:
+      case <- reconnect:
+        fmt.Printf("bot.Read got reconnect message, exit [%v]\n", reconnect)
         return
       default:
+        line, err := bot.reader.ReadLine()
+        if err != nil {
+          fmt.Printf("bot.Read error, exiting %v\n", err)
+          bot.err <- err
+          return
+        } else {
+          if len(line) > 4 && line[0:4] == "PING" {
+            bot.Cmd("PONG :%s", line[6:len(line)])
+          }
+          if bot.recv != nil {
+            // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
+            bot.recv <- &ServerResponse{msg: line}
+          }
+        }
     }
   }
 }
 
-func (bot *Bot) BroadcastMessage () {
-  for {
-    msg := <-bot.bot
-    for i:= bot.chans.Front(); i != nil; i = i.Next() {
-      ch := i.Value.(chan *Message)
-      ch <- msg
-    }
-  }
-}
-
-func (bot *Bot) ExecutePlugins () {
-  for i := bot.plugins.Front(); i != nil; i = i.Next() {
-    fn := i.Value.(func())
-    go fn()
-  }
-}
-
-func (bot *Bot) Write() {
-  fmt.Println("bot.Write")
+func (bot *Bot) Write(reconnect <-chan bool) {
+  fmt.Printf("bot.Write\n")
   // sends messages to server
   for {
-    msg := <-bot.send
-    bot.Cmd("%s %s :%s", msg.command, msg.target, msg.message)
+    select {
+      case <- reconnect:
+        fmt.Printf("bot.Write got reconnect message, exit\n")
+        return
+      case msg, ok := <-bot.send:
+        if !ok {
+          fmt.Printf("bot.Write not okay, exit msg[%v] ok[%v]\n", msg, ok)
+          return
+        }
+        if (msg == nil) {
+          fmt.Printf("bot.Write encountered msg error [%v]\n", msg)
+        } else {
+          fmt.Printf("bot.Write calling [%+v] bot.Cmd(%s %s %s)", msg, msg.command, msg.target, msg.message)
+          bot.Cmd("%s %s :%s", msg.command, msg.target, msg.message)
+        }
+    }
+  }
+}
+
+func (bot *Bot) BroadcastMessage (reconnect <-chan bool) {
+  fmt.Printf("bot.BroadcastMessage\n")
+  for {
+    select {
+      case <- reconnect:
+        fmt.Printf("bot.BroadcastMessage got reconnect message, exit\n")
+        return
+      case msg, ok := <-bot.bot:
+        if !ok {
+          fmt.Printf("BroadcastMessage not okay, exiting [%v]\n", ok)
+          return
+        }
+        for i:= bot.chans.Front(); i != nil; i = i.Next() {
+          ch := i.Value.(chan *Message)
+          ch <- msg
+        }
+    }
+  }
+}
+
+func (bot *Bot) ExecutePlugins (reconnect <-chan bool) {
+  fmt.Printf("bot.ExecutePlugins\n")
+  // todo: move this out of connect.  figure out a way to pass in a list of fns so they can get relaunched each conn refresh
+  bot.Plugin(loggerPlugin)
+  bot.Plugin(redisFromIrcPlugin)
+  go redisToIrcPlugin(bot, reconnect) // bot.Plugin(redisToIrcPlugin)
+
+  for i := bot.plugins.Front(); i != nil; i = i.Next() {
+    ch := MessageChan()
+    bot.chans.PushBack(ch)
+    fn := i.Value.(func(bot *Bot, ch <-chan *Message, reconnect <-chan bool))
+    fmt.Printf("executing plugin %v\n", fn)
+    go fn(bot, ch, reconnect)
   }
 }
 
 func (bot *Bot) Register() {
+  rand.Seed(time.Now().Unix())
+  randomness := rand.Intn(1000 - 1) + 1
   bot.Cmd("USER %s 8 * :%s", bot.nick, bot.nick)
-  bot.Cmd("NICK %s", bot.nick) // todo nick in use
+  bot.Cmd("NICK %s%d", bot.nick, randomness) // todo nick in use
   bot.Cmd("JOIN %s", bot.channel) // todo wait for code
 }
 
 func (bot *Bot) Quit() {
-  fmt.Println("bot.Quit")
+  fmt.Printf("bot.Quit\n")
   bot.Cmd("QUIT")
 }
 
-func (bot *Bot) Reconnect() error {
-  fmt.Println("bot.Reconnect running")
+func (bot *Bot) Reconnect(reconnect chan bool) error {
+  fmt.Printf("bot.Reconnect running rec:[%v] \n", reconnect)
+
+  // i think i need to close these????
+  bot.reader = nil
+  bot.writer = nil
+
+  bot.plugins = list.New()
+  bot.chans = list.New()
+  for i:= bot.chans.Front(); i != nil; i = i.Next() {
+    ch := i.Value.(chan *Message)
+    close(ch)
+  }
+
+
   close(bot.send)
   close(bot.recv)
+  close(bot.bot)
+  close(reconnect)
 
-  fmt.Println("setting readsync")
-  bot.readsync <- true
-  fmt.Println("setting writesync")
-  <- bot.writesync
-
-  bot.Quit()
-
-  fmt.Println("reconnect launching connect")
   return bot.Connect()
 }
 
 func (bot *Bot) Connect() error {
-  fmt.Println("bot.Connect running")
+  fmt.Printf("bot.Connect running\n")
+
   con, err := net.Dial("tcp", bot.server +":"+ bot.port)
   if err != nil {
     return err
@@ -144,48 +190,41 @@ func (bot *Bot) Connect() error {
   defer con.Close()
   bot.conn = con
 
-  bot.err = make(chan error)
+  reconnect := make(chan bool)
   bot.send = make(chan *SendMessage)
   bot.recv = make(chan *ServerResponse)
   bot.bot = make(chan *Message)
-  bot.readsync = make(chan bool)
-  bot.writesync = make(chan bool)
 
   bot.reader = textproto.NewReader(bufio.NewReader(con))
   bot.writer = textproto.NewWriter(bufio.NewWriter(con))
+  fmt.Printf("bot reader[%v] writer[%v] \n", bot.reader, bot.writer)
 
-  go bot.Write()
-  go bot.Read()
-  bot.ExecutePlugins()
-  go bot.BroadcastMessage()
+  go bot.Write(reconnect)
+  go bot.Read(reconnect)
+  bot.ExecutePlugins(reconnect) // reconnect??
+  go bot.BroadcastMessage(reconnect)
   bot.Register()
 
   for {
     select {
       case resp := <-bot.recv:
         bot.bot <-CreateMessage(resp.msg)
-      /*case <-time.After(time.Second * 6):
-        fmt.Println("no read within 600 seconds, reconnecting")
-        bot.Reconnect()*/
+      case <-time.After(time.Second * 600):
+        fmt.Printf("no read within 600 seconds, reconnecting\n")
+        reconnect <- true
+        bot.Reconnect(reconnect)
       case err := (<-bot.err): 
-        fmt.Println("bot error detected ", err)
-        bot.Reconnect()
+        fmt.Printf("bot error detected %v \n", err)
+        reconnect <- true
+        bot.Reconnect(reconnect)
     }
-    /*
-    resp := <-bot.recv
-    if resp.err == nil {
-      bot.bot <-CreateMessage(resp.msg)
-    } else {
-      log.Fatal("connection closed")
-      break
-    }*/
   }
   return nil
 }
 
 func CreateMessage(raw string) *Message {
   var netmask, source, message string
-  if (":" == raw[0:1]) {
+  if (len(raw) > 1 && ":" == raw[0:1]) {
     offset := strings.Index(raw, " ")
     source = raw[1:offset]
     message = raw[offset + 1 : len(raw)]
@@ -200,21 +239,22 @@ func CreateMessage(raw string) *Message {
 }
 
 // registers a plugin
-func (bot *Bot) Plugin(ch chan *Message, f func()) {
-  bot.chans.PushBack(ch)
-  bot.plugins.PushBack(f)
+
+func (bot *Bot) Plugin(callback func(bot *Bot, ch <-chan *Message, reconnect <-chan bool)) {
+  bot.plugins.PushBack(callback)
 }
 
 func (bot *Bot) Cmd(strfmt string, args...interface{}) {
   fmt.Printf("write: [" + strfmt + "]\n", args...)
   if bot.conn == nil {
-    fmt.Println("bot.Cmd attempting to write with no connect")
+    fmt.Printf("bot.Cmd attempting to write with no connect\n")
     return
-  }
-
-  err := bot.writer.PrintfLine(strfmt, args...);
-  if err != nil {
-    bot.err <- err
+  } else {
+    err := bot.writer.PrintfLine(strfmt, args...);
+    if err != nil {
+      fmt.Printf("error with bot printfline\n")
+      bot.err <- err
+    }
   }
 }
 
@@ -236,47 +276,82 @@ type ServerResponse struct {
   msg string
 }
 
-func main() {
-  bot := NewBot()
-  bot.server = "localhost"
-
-  // stdout logger
-  logger := MessageChan()
-  bot.Plugin(logger, func() {
-    for {
-      msg := <-logger
-      fmt.Printf("read: [%+v]\n", msg)
+func loggerPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
+  fmt.Printf("plugin Logger running\n")
+  for {
+    select {
+      case <- reconnect:
+        fmt.Printf("loggerPlugin got reconnect message, exit\n")
+        return
+      case msg := <-ch:
+        // fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
+        if (msg != nil) {
+          code := msg.Message[0:3]
+          if ("372" != code &&
+            "002" != code &&
+            "003" != code &&
+            "004" != code &&
+            "005" != code &&
+            "250" != code &&
+            "251" != code &&
+            "254" != code &&
+            "255" != code &&
+            "265" != code &&
+            "266" != code &&
+            "375" != code &&
+            "376" != code) {
+            fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
+          }
+        }
     }
-  })
+  }
+}
 
+func redisFromIrcPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
+  fmt.Printf("plugin Redis from irc running\n")
   password := ""  // no password set
   db := int64(-1) // use default DB
   client := redis.NewTCPClient("localhost:6379", password, db)
 
-  // from irc redis
-  fromirc := MessageChan()
-  bot.Plugin(fromirc, func() {
-    for {
-      msg := <-fromirc
-      jstr, _ := json.Marshal(msg)
-      fmt.Printf("FROMIRC [%s]\n", string(jstr))
-      client.Publish("FROMIRC", string(jstr))
+  for {
+    select {
+      case <- reconnect:
+        fmt.Printf("redisFromIrcPlugin got reconnect message, exit\n")
+        return
+      case msg := <-ch:
+        jstr, _ := json.Marshal(msg)
+        fmt.Printf("FROMIRC [%s]\n", string(jstr))
+        client.Publish("FROMIRC", string(jstr))
     }
-  })
+  }
+}
 
-  // to irc redis
-  go func() {
-    pubsub, err := client.PubSubClient()
-    defer pubsub.Close()
-    toirc, err := pubsub.Subscribe("TOIRC")
-    _ = err
+func redisToIrcPlugin(bot *Bot, reconnect <-chan bool) {
+  fmt.Printf("plugin Redis to irc running\n")
+  password := ""  // no password set
+  db := int64(-1) // use default DB
+  client := redis.NewTCPClient("localhost:6379", password, db)
 
-    for {
-      msg := <-toirc
-      fmt.Printf("TOIRC [%s]\n", msg)
+  pubsub, err := client.PubSubClient()
+  defer pubsub.Close()
+  toirc, err := pubsub.Subscribe("TOIRC")
+  _ = err
+
+  for {
+    select {
+      case <- reconnect:
+        fmt.Printf("redisToIrcPlugin got reconnect message, exit\n")
+        return
+      case msg := <-toirc:
+        fmt.Printf("TOIRC [%s]\n", msg)
     }
-  }()
+  }
+}
 
+
+func main() {
+  bot := NewBot()
+  bot.server = "localhost"
   bot.Connect()
 }
 
