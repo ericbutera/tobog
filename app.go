@@ -270,6 +270,32 @@ func (bot *Bot) Cmd(strfmt string, args...interface{}) {
   }
 }
 
+type FromRedis struct {
+  Type string
+  To string
+  Message string
+  Command string
+}
+func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
+  // {Type:"privmsg",To:"#moo",Message:"hello world!",Command:"smile"}
+  fmt.Printf("bot handle redis command %+v\n", msg.Message)
+  var cmd FromRedis
+  err := json.Unmarshal([]byte(msg.Message), &cmd)
+  fmt.Printf("cmd %+v\n", cmd)
+  if err == nil {
+    switch (cmd.Type) {
+      case "privmsg":
+        bot.Cmd("PRIVMSG %s :%s", cmd.To, cmd.Message)
+      case "action":
+        bot.Cmd("PRIVMSG %s :%s", cmd.To, cmd.Message)
+      case "raw":
+        bot.Cmd("%s", cmd.Command)
+    }
+  } else {
+    fmt.Printf("error %+v\n", err)
+  }
+}
+
 type Message struct {
   Netmask *Netmask
   Source string
@@ -361,7 +387,8 @@ func redisToIrcPlugin(bot *Bot, reconnect <-chan bool) {
         fmt.Printf("redisToIrcPlugin got reconnect message, exit\n")
         return
       case msg := <-toirc:
-        fmt.Printf("TOIRC [%s]\n", msg)
+        fmt.Printf("TOIRC [%+v]\n", msg)
+        bot.HandleRedisCommand(msg)
     }
   }
 }
