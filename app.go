@@ -1,4 +1,3 @@
-// 
 // https://gobyexample.com
 // https://github.com/go-nut/gobot/blob/master/irc.go
 // http://stackoverflow.com/questions/13342128/simple-golang-irc-bot-keeps-timing-out
@@ -13,6 +12,7 @@ import (
   "bufio"
   "strings"
   "time"
+  "regexp"
   "container/list"
   "net/textproto"
   "math/rand"
@@ -75,8 +75,7 @@ func (bot *Bot) Read(reconnect <-chan bool) {
         } else {
           if len(line) > 4 && line[0:4] == "PING" {
             bot.Cmd("PONG :%s", line[6:len(line)])
-          }
-          if bot.recv != nil {
+          } else if bot.recv != nil {
             // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
             bot.recv <- &ServerResponse{msg: line}
           }
@@ -171,7 +170,6 @@ func (bot *Bot) Reconnect(reconnect chan bool) error {
     close(ch)
   }
 
-
   close(bot.send)
   close(bot.recv)
   close(bot.bot)
@@ -223,13 +221,27 @@ func (bot *Bot) Connect() error {
 }
 
 func CreateMessage(raw string) *Message {
-  var netmask, source, message string
-  if (len(raw) > 1 && ":" == raw[0:1]) {
+  var source, message string
+  netmask := &Netmask{ Origin: "server"}
+
+  if len(raw) > 1 && ":" == raw[0:1] {
     offset := strings.Index(raw, " ")
     source = raw[1:offset]
     message = raw[offset + 1 : len(raw)]
+
+    reg, err := regexp.Compile(`([^!@]+)!([^@]+)@(.*)`) // put this somewhere else
+    if err == nil {
+      match := reg.FindStringSubmatch(source)
+      if match != nil {
+        netmask.Nick = match[1]
+        netmask.Ident = match[2]
+        netmask.Host = match[3]
+        netmask.Origin = "user"
+        fmt.Printf("regex match %v netmask %v \n", match, netmask)
+      }
+    }
   } else {
-    source = "local-server"
+    source = "local"
     message = raw
   }
   return &Message{
@@ -259,8 +271,7 @@ func (bot *Bot) Cmd(strfmt string, args...interface{}) {
 }
 
 type Message struct {
-  /* Server string Nick string User string Host string Command string Target string Message string*/
-  Netmask string
+  Netmask *Netmask
   Source string
   Message string
 }
@@ -274,6 +285,13 @@ type SendMessage struct {
 type ServerResponse struct {
   err error
   msg string
+}
+
+type Netmask struct {
+  Nick string
+  Ident string
+  Host string
+  Origin string // todo: const
 }
 
 func loggerPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
@@ -320,7 +338,7 @@ func redisFromIrcPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
         return
       case msg := <-ch:
         jstr, _ := json.Marshal(msg)
-        fmt.Printf("FROMIRC [%s]\n", string(jstr))
+        // fmt.Printf("FROMIRC [%s]\n", string(jstr))
         client.Publish("FROMIRC", string(jstr))
     }
   }
