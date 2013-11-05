@@ -207,8 +207,8 @@ func (bot *Bot) Connect() error {
     select {
       case resp := <-bot.recv:
         bot.bot <-CreateMessage(resp.msg)
-      case <-time.After(time.Second * 600):
-        fmt.Printf("no read within 600 seconds, reconnecting\n")
+      case <-time.After(time.Second * 900):
+        fmt.Printf("no read within 900 seconds, reconnecting\n")
         reconnect <- true
         bot.Reconnect(reconnect)
       case err := (<-bot.err): 
@@ -277,6 +277,8 @@ type FromRedis struct {
   Command string
 }
 func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
+  // "publish TOIRC "+ JSON.stringify({Type:"raw", To:"", Message:"", Command:"NICK yomama"}).replace(/"/gi, '\\"');
+  // "publish TOIRC "+ JSON.stringify({Type:"privmsg", To:"#moo", Message:"a message", Command:""}).replace(/"/gi, '\\"');
   // {Type:"privmsg",To:"#moo",Message:"hello world!",Command:"smile"}
   fmt.Printf("bot handle redis command %+v\n", msg.Message)
   var cmd FromRedis
