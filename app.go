@@ -237,17 +237,32 @@ func CreateMessage(raw string) *Message {
         netmask.Ident = match[2]
         netmask.Host = match[3]
         netmask.Origin = "user"
-        fmt.Printf("regex match %v netmask %v \n", match, netmask)
+        // fmt.Printf("regex match %v netmask %v \n", match, netmask)
       }
+    }
+
+    /*
+    "PRIVMSG #moo :hey"                    - hey
+    "PRIVMSG #moo :\u0001ACTION hey\u0001" - /me hey
+    "PRIVMSG moo603 :\u0001VERSION\u0001"  - /ctcp moo603 VERSION
+    "PRIVMSG #moo :\u0001VERSION\u0001"    - /ctcp #moo VERSION
+    */
+    if len(raw) > 7 && "PRIVMSG" == raw[0:6] {
+      // to = offset 8 thru first space
+      // next = first char after : to EOL
     }
   } else {
     source = "local"
     message = raw
   }
+
   return &Message{
     Netmask: netmask,
     Source: source,
-    Message: message}
+    Message: message,
+    To: "",
+    Type: "msg", // ctcp, msg, channel
+    Action: false}
 }
 
 // registers a plugin
@@ -302,6 +317,9 @@ type Message struct {
   Netmask *Netmask
   Source string
   Message string
+  To string
+  Type string // ctcp, msg, channel
+  Action bool
 }
 
 type SendMessage struct {
