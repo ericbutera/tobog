@@ -300,15 +300,11 @@ func CreateMessage(raw string) *Message {
     Netmask: netmask,
     Source: source,
     Message: message,
-<<<<<<< HEAD
-    To: "",
-    Type: "msg", // ctcp, msg, channel
-    Action: false}
-=======
     To: to,
     Command: command,
     Raw: raw}
->>>>>>> privmsg
+    //Type: "msg", // ctcp, msg, channel
+    //Action: false
 }
 
 // registers a plugin
@@ -367,13 +363,9 @@ type Message struct {
   Command string // NOTICE PRIVMSG JOIN QUIT 001
   To string // channel/nick
   Message string
-<<<<<<< HEAD
-  To string
-  Type string // ctcp, msg, channel
-  Action bool
-=======
+  // Type string // ctcp, msg, channel
+  // Action bool
   Raw string
->>>>>>> privmsg
 }
 
 type SendMessage struct {
