@@ -73,12 +73,22 @@ func (bot *Bot) Read(reconnect <-chan bool) {
           bot.err <- err
           return
         } else {
+          if bot.recv != nil {
+            if len(line) > 4 && line[0:4] == "PING" {
+              bot.Cmd("PONG :%s", line[6:len(line)])
+            }
+            // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
+            bot.recv <- &ServerResponse{msg: line}
+          }
+          /*
+          // this causes ping timeouts since it doesnt put anything in bot.recv
           if len(line) > 4 && line[0:4] == "PING" {
             bot.Cmd("PONG :%s", line[6:len(line)])
           } else if bot.recv != nil {
             // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
             bot.recv <- &ServerResponse{msg: line}
           }
+          */
         }
     }
   }
@@ -206,9 +216,10 @@ func (bot *Bot) Connect() error {
   for {
     select {
       case resp := <-bot.recv:
+        // fmt.Printf("creating message from [%+v]\n", resp)
         bot.bot <-CreateMessage(resp.msg)
-      case <-time.After(time.Second * 900):
-        fmt.Printf("no read within 900 seconds, reconnecting\n")
+      case <-time.After(time.Second * 600):
+        fmt.Printf("no read within 600 seconds, reconnecting\n")
         reconnect <- true
         bot.Reconnect(reconnect)
       case err := (<-bot.err): 
@@ -221,14 +232,43 @@ func (bot *Bot) Connect() error {
 }
 
 func CreateMessage(raw string) *Message {
-  var source, message string
+  var source, message, to, command string
   netmask := &Netmask{ Origin: "server"}
 
   if len(raw) > 1 && ":" == raw[0:1] {
     offset := strings.Index(raw, " ")
     source = raw[1:offset]
-    message = raw[offset + 1 : len(raw)]
 
+    // command to parse 001 PRIVMSG NOTICE JOIN QUIT MODE
+    rawCommand := raw[offset + 1 : len(raw)]
+    // fmt.Printf("parsing [%+v]\n", rawCommand)
+
+    // privmsg - todo: refactor
+    cmdOffset := strings.Index(rawCommand, " ")
+
+    if cmdOffset > 0 && "PRIVMSG" == rawCommand[0:cmdOffset] {
+      colon := strings.Index(rawCommand, ":")
+      actionChar := "\u0001"
+
+      startToOffset := 8
+      endToOffset := colon - 1
+      to = rawCommand[startToOffset:endToOffset] //Message.To
+
+      // fmt.Printf("raw [%v]\n", []byte(rawCommand))
+      if rawCommand[colon+1:colon+2] == actionChar {
+        if len(rawCommand) > colon+9 && rawCommand[colon+2:colon+8] == "ACTION" {
+          // action
+          message = rawCommand[colon+9: len(rawCommand)-1]
+        } else {
+          // ctcp
+          message = rawCommand[colon+2: len(rawCommand)-1]
+        }
+      } else {
+        message = rawCommand[colon+1: len(rawCommand)]
+      }
+    }
+
+    // netmask - refactor
     reg, err := regexp.Compile(`([^!@]+)!([^@]+)@(.*)`) // put this somewhere else
     if err == nil {
       match := reg.FindStringSubmatch(source)
@@ -260,9 +300,15 @@ func CreateMessage(raw string) *Message {
     Netmask: netmask,
     Source: source,
     Message: message,
+<<<<<<< HEAD
     To: "",
     Type: "msg", // ctcp, msg, channel
     Action: false}
+=======
+    To: to,
+    Command: command,
+    Raw: raw}
+>>>>>>> privmsg
 }
 
 // registers a plugin
@@ -304,7 +350,9 @@ func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
       case "privmsg":
         bot.Cmd("PRIVMSG %s :%s", cmd.To, cmd.Message)
       case "action":
-        bot.Cmd("PRIVMSG %s :%s", cmd.To, cmd.Message)
+        bot.Cmd("PRIVMSG %s :\u0001ACTION%s\u0001", cmd.To, cmd.Message)
+      case "ctcp":
+        bot.Cmd("PRIVMSG %s :\u0001%s\u0001", cmd.To, cmd.Message)
       case "raw":
         bot.Cmd("%s", cmd.Command)
     }
@@ -315,11 +363,17 @@ func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
 
 type Message struct {
   Netmask *Netmask
-  Source string
+  Source string // raw netmask or server
+  Command string // NOTICE PRIVMSG JOIN QUIT 001
+  To string // channel/nick
   Message string
+<<<<<<< HEAD
   To string
   Type string // ctcp, msg, channel
   Action bool
+=======
+  Raw string
+>>>>>>> privmsg
 }
 
 type SendMessage struct {
@@ -349,7 +403,7 @@ func loggerPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
         return
       case msg := <-ch:
         // fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
-        if (msg != nil) {
+        if (msg != nil && len(msg.Message) > 3) {
           code := msg.Message[0:3]
           if ("372" != code &&
             "002" != code &&
@@ -383,9 +437,11 @@ func redisFromIrcPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
         fmt.Printf("redisFromIrcPlugin got reconnect message, exit\n")
         return
       case msg := <-ch:
-        jstr, _ := json.Marshal(msg)
-        // fmt.Printf("FROMIRC [%s]\n", string(jstr))
-        client.Publish("FROMIRC", string(jstr))
+        if len(msg.Raw) > 4 && "PING" != msg.Raw[0:4] {
+          jstr, _ := json.Marshal(msg)
+          // fmt.Printf("FROMIRC [%s]\n", string(jstr))
+          client.Publish("FROMIRC", string(jstr))
+        }
     }
   }
 }
