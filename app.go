@@ -395,23 +395,8 @@ func loggerPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
         return
       case msg := <-ch:
         // fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
-        if (msg != nil && len(msg.Message) > 3) {
-          code := msg.Message[0:3]
-          if ("372" != code &&
-            "002" != code &&
-            "003" != code &&
-            "004" != code &&
-            "005" != code &&
-            "250" != code &&
-            "251" != code &&
-            "254" != code &&
-            "255" != code &&
-            "265" != code &&
-            "266" != code &&
-            "375" != code &&
-            "376" != code) {
-            fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
-          }
+        if msg != nil && len(msg.Message) > 0 {
+          fmt.Printf("[%v][%v]read: src[%s] msg[%s]\n", bot.conn, bot.reader, msg.Source, msg.Message)
         }
     }
   }
