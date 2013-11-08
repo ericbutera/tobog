@@ -80,15 +80,6 @@ func (bot *Bot) Read(reconnect <-chan bool) {
             // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
             bot.recv <- &ServerResponse{msg: line}
           }
-          /*
-          // this causes ping timeouts since it doesnt put anything in bot.recv
-          if len(line) > 4 && line[0:4] == "PING" {
-            bot.Cmd("PONG :%s", line[6:len(line)])
-          } else if bot.recv != nil {
-            // fmt.Printf("bot.Read val of bot.recv: [%v]\n", bot.recv)
-            bot.recv <- &ServerResponse{msg: line}
-          }
-          */
         }
     }
   }
@@ -180,9 +171,13 @@ func (bot *Bot) Reconnect(reconnect chan bool) error {
     close(ch)
   }
 
+  fmt.Printf("closing bot.send\n")
   close(bot.send)
+  fmt.Printf("closing bot.recv\n")
   close(bot.recv)
+  fmt.Printf("closing bot.bot\n")
   close(bot.bot)
+  fmt.Printf("closing reconnect\n")
   close(reconnect)
 
   return bot.Connect()
@@ -198,6 +193,7 @@ func (bot *Bot) Connect() error {
   defer con.Close()
   bot.conn = con
 
+  fmt.Printf("creating new channels\n")
   reconnect := make(chan bool)
   bot.send = make(chan *SendMessage)
   bot.recv = make(chan *ServerResponse)
@@ -215,13 +211,39 @@ func (bot *Bot) Connect() error {
 
   for {
     select {
-      case resp := <-bot.recv:
-        // fmt.Printf("creating message from [%+v]\n", resp)
-        bot.bot <-CreateMessage(resp.msg)
+      case resp, ok := <-bot.recv:
+        if !ok {
+          // causes process to exit
+          return err
+          fmt.Printf("main loop response not ok! \n")
+          //reconnect <- true
+          //bot.Reconnect(reconnect)
+        }
+        fmt.Printf("raw[%+v] ok[%+v]\n", resp, ok)
+        if ok && resp != nil && len(resp.msg) > 3 {
+          msg := CreateMessage(resp.msg)
+          code := msg.Code
+          if ("372" != code &&
+          "002" != code &&
+          "003" != code &&
+          "004" != code &&
+          "005" != code &&
+          "250" != code &&
+          "251" != code &&
+          "254" != code &&
+          "255" != code &&
+          "265" != code &&
+          "266" != code &&
+          "375" != code &&
+          "376" != code) {
+            fmt.Printf("[%v][%v] resp[%+v]\n", bot.conn, bot.reader, resp)
+            bot.bot <- msg
+          }
+        }
       case <-time.After(time.Second * 600):
         fmt.Printf("no read within 600 seconds, reconnecting\n")
         reconnect <- true
-        bot.Reconnect(reconnect)
+        // bot.Reconnect(reconnect)
       case err := (<-bot.err): 
         fmt.Printf("bot error detected %v \n", err)
         reconnect <- true
@@ -232,7 +254,8 @@ func (bot *Bot) Connect() error {
 }
 
 func CreateMessage(raw string) *Message {
-  var source, message, to, command string
+  var source, message, to, code string
+  var isAction, isCtcp bool = false, false
   netmask := &Netmask{ Origin: "server"}
 
   if len(raw) > 1 && ":" == raw[0:1] {
@@ -245,6 +268,7 @@ func CreateMessage(raw string) *Message {
 
     // privmsg - todo: refactor
     cmdOffset := strings.Index(rawCommand, " ")
+    code = rawCommand[0:cmdOffset]
 
     if cmdOffset > 0 && "PRIVMSG" == rawCommand[0:cmdOffset] {
       colon := strings.Index(rawCommand, ":")
@@ -259,9 +283,11 @@ func CreateMessage(raw string) *Message {
         if len(rawCommand) > colon+9 && rawCommand[colon+2:colon+8] == "ACTION" {
           // action
           message = rawCommand[colon+9: len(rawCommand)-1]
+          isAction = true
         } else {
           // ctcp
           message = rawCommand[colon+2: len(rawCommand)-1]
+          isCtcp = true
         }
       } else {
         message = rawCommand[colon+1: len(rawCommand)]
@@ -280,17 +306,6 @@ func CreateMessage(raw string) *Message {
         // fmt.Printf("regex match %v netmask %v \n", match, netmask)
       }
     }
-
-    /*
-    "PRIVMSG #moo :hey"                    - hey
-    "PRIVMSG #moo :\u0001ACTION hey\u0001" - /me hey
-    "PRIVMSG moo603 :\u0001VERSION\u0001"  - /ctcp moo603 VERSION
-    "PRIVMSG #moo :\u0001VERSION\u0001"    - /ctcp #moo VERSION
-    */
-    if len(raw) > 7 && "PRIVMSG" == raw[0:6] {
-      // to = offset 8 thru first space
-      // next = first char after : to EOL
-    }
   } else {
     source = "local"
     message = raw
@@ -301,10 +316,10 @@ func CreateMessage(raw string) *Message {
     Source: source,
     Message: message,
     To: to,
-    Command: command,
+    Code:code,
+    IsAction: isAction,
+    IsCtcp: isCtcp,
     Raw: raw}
-    //Type: "msg", // ctcp, msg, channel
-    //Action: false
 }
 
 // registers a plugin
@@ -360,11 +375,11 @@ func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
 type Message struct {
   Netmask *Netmask
   Source string // raw netmask or server
-  Command string // NOTICE PRIVMSG JOIN QUIT 001
+  Code string // NOTICE PRIVMSG JOIN QUIT 001
   To string // channel/nick
   Message string
-  // Type string // ctcp, msg, channel
-  // Action bool
+  IsAction bool
+  IsCtcp bool
   Raw string
 }
 
@@ -414,10 +429,12 @@ func redisFromIrcPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
         fmt.Printf("redisFromIrcPlugin got reconnect message, exit\n")
         return
       case msg := <-ch:
+        fmt.Printf("redis FROMIRC [%+v]\n", msg)
         if len(msg.Raw) > 4 && "PING" != msg.Raw[0:4] {
-          jstr, _ := json.Marshal(msg)
-          // fmt.Printf("FROMIRC [%s]\n", string(jstr))
-          client.Publish("FROMIRC", string(jstr))
+          jstr, err := json.Marshal(msg)
+          if err == nil {
+            client.Publish("FROMIRC", string(jstr))
+          }
         }
     }
   }
