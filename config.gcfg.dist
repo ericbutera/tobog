@@ -1,0 +1,7 @@
+[general]
+server = localhost
+port = 6667
+nick = moo
+channel = "#moo"
+user = moo
+
