@@ -13,6 +13,7 @@ import (
   "strings"
   "time"
   "regexp"
+  "os"
   "container/list"
   "net/textproto"
   "math/rand"
@@ -512,7 +513,11 @@ type Config struct {
 
 func main() {
   var cfg Config
-  err := gcfg.ReadFileInto(&cfg, "config.gcfg")
+  if len(os.Args) < 2 {
+    fmt.Printf("Config file path missing\n")
+    os.Exit(1)
+  }
+  err := gcfg.ReadFileInto(&cfg, os.Args[1])
   if nil != err {
     fmt.Printf("Invalid config %+v\n", err)
     return
