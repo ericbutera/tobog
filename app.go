@@ -18,6 +18,7 @@ import (
   "math/rand"
   "encoding/json"
   redis "github.com/vmihailenco/redis"
+  gcfg "code.google.com/p/gcfg"
 )
 
 func CreateMessage(raw string) *Message {
@@ -99,7 +100,6 @@ type Bot struct {
   nick string
   user string
   channel string
-  pass string
 
   plugins *list.List
   chans *list.List
@@ -116,14 +116,13 @@ type Bot struct {
   ignoredCodes []string
 }
 
-func NewBot() *Bot {
+func NewBot(cfg Config) *Bot {
   return &Bot{
-    server: "localhost",
-    port: "6667",
-    nick: "moo",
-    channel: "#moo",
-    pass: "",
-    user: "moo",
+    server: cfg.General.Server, // "localhost",
+    port: cfg.General.Port,  //"6667",
+    nick: cfg.General.Nick, // "moo",
+    channel: cfg.General.Channel, // "#moo",
+    user: cfg.General.User, // "moo",
     plugins: list.New(),
     chans: list.New(),
     err: make(chan error),
@@ -342,7 +341,6 @@ type FromRedis struct {
   Command string
 }
 func (bot *Bot) HandleRedisCommand(msg *redis.Message) {
-  // "publish TOIRC "+ JSON.stringify({Type:"raw", To:"", Message:"", Command:"NICK yomama"}).replace(/"/gi, '\\"');
   // "publish TOIRC "+ JSON.stringify({Type:"privmsg", To:"#moo", Message:"a message", Command:""}).replace(/"/gi, '\\"');
   var cmd FromRedis
   err := json.Unmarshal([]byte(msg.Message), &cmd)
@@ -502,9 +500,25 @@ func redisToIrcPlugin(bot *Bot, reconnect <-chan bool) {
   }
 }
 
+type Config struct {
+  General struct {
+    Server string
+    Port string
+    Nick string
+    Channel string
+    User string
+  }
+}
 
 func main() {
-  bot := NewBot()
+  var cfg Config
+  err := gcfg.ReadFileInto(&cfg, "config.gcfg")
+  if nil != err {
+    fmt.Printf("Invalid config %+v\n", err)
+    return
+  }
+
+  bot := NewBot(cfg)
   bot.server = "localhost"
   bot.Connect()
 }
