@@ -33,7 +33,7 @@ func CreateMessage(raw string) *Message {
 
     // command to parse 001 PRIVMSG NOTICE JOIN QUIT MODE
     rawCommand := raw[offset + 1 : len(raw)]
-    // fmt.Printf("parsing [%+v]\n", rawCommand)
+    fmt.Printf("parsing [%+v]\n", rawCommand)
 
     // privmsg - todo: refactor
     cmdOffset := strings.Index(rawCommand, " ")
@@ -192,8 +192,10 @@ func (bot *Bot) BroadcastMessage(reconnect <-chan bool) {
           fmt.Printf("BroadcastMessage not okay, exiting [%v]\n", ok)
           return
         }
+        fmt.Printf("bot.BroadcastMessage [%+v]\n", msg)
         for i:= bot.chans.Front(); i != nil; i = i.Next() {
           ch := i.Value.(chan *Message)
+          fmt.Printf("broadcasting to [%+v] i[%+v]\n", ch, i.Value)
           ch <- msg
         }
     }
@@ -469,7 +471,9 @@ func redisFromIrcPlugin(bot *Bot, ch <-chan *Message, reconnect <-chan bool) {
       case msg := <-ch:
         fmt.Printf("redis FROMIRC [%+v]\n", msg)
         if len(msg.Raw) > 4 && "PING" != msg.Raw[0:4] {
+          fmt.Printf("redis FROMIRC message not ping\n")
           jstr, err := json.Marshal(msg)
+          fmt.Printf("redis FROMIRC jstr [%+v] err [%+v]\n", jstr, err)
           if err == nil {
             client.Publish("FROMIRC", string(jstr))
           }
