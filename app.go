@@ -2,15 +2,27 @@
 package main
 
 import (
-	//"encoding/json"
+	"encoding/json"
 	"fmt"
 	irc "github.com/fluffle/goirc/client"
 	"github.com/fluffle/goirc/logging"
+	"github.com/vaughan0/go-ini"
 	redis "gopkg.in/redis.v2"
+	"os"
 	"time"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		fmt.Printf("has args %+v", os.Args)
+		iniconfig, err := ini.LoadFile(os.Args[1])
+		if err == nil {
+			fmt.Printf("file %+v", iniconfig)
+			//file["section"]
+		}
+	}
+	// name, ok := file.Get("section", "value")
+	panic("oh noes")
 	var logger logging.Logger = stdoutLogger{}
 	logging.SetLogger(logger)
 	logging.Debug("Launching botter")
@@ -48,7 +60,7 @@ func Create() Bot {
 
 	cfg := irc.NewConfig("tobog")
 	cfg.SSL = false
-	cfg.Server = "localhost:6667"
+	cfg.Server = "localhost:6668"
 	//cfg.NewNick = func(n string) string { return n + "^" }
 	cfg.PingFreq = 30 * time.Second
 	cfg.Timeout = 120 * time.Second
@@ -67,19 +79,19 @@ func Create() Bot {
 		fmt.Printf("Connected to %s", cfg.Server)
 		fmt.Printf("joining channels")
 		conn.Join("#moo")
-		bot.FromIrc("connected to server")
+		conn.Join("#traversecity")
 	})
 
 	connection.HandleFunc(irc.DISCONNECTED, func(conn *irc.Conn, line *irc.Line) {
 		fmt.Printf("Disconncted from %s", cfg.Server)
 		fmt.Printf("Reconnecting...")
-		bot.FromIrc("disconnected from server")
 		bot.quit <- true
 	})
 
 	connection.HandleFunc(irc.PRIVMSG, func(conn *irc.Conn, line *irc.Line) {
 		fmt.Printf("PRIVMSG : %+v", line.Raw)
-		bot.FromIrc(fmt.Sprintf("bot got message %v", line.Raw))
+		m := CreateRedisLine(line)
+		bot.FromIrc(m)
 	})
 
 	bot.Redis()
@@ -142,41 +154,72 @@ func (bot *Botter) RedisPubSub(client *redis.Client) {
 	}
 }
 
-func (bot *Botter) FromIrc(message string) {
-	fmt.Printf("FromIrc got a message %v", message)
-	bot.redisClient.Publish("FROMIRC", message)
-	/*
-	   fmt.Printf("redis FROMIRC [%+v]\n", msg)
-	   if len(msg.Raw) > 4 && "PING" != msg.Raw[0:4] {
-	     fmt.Printf("redis FROMIRC message not ping\n")
-	     jstr, err := json.Marshal(msg)
-	     fmt.Printf("redis FROMIRC jstr [%+v] err [%+v]\n", jstr, err)
-	     if err == nil {
-	       client.Publish("FROMIRC", string(jstr))
-	     }
-	   }
-	*/
+func (bot *Botter) FromIrc(line *ToRedisLine /*message string*/) {
+	fmt.Printf("FromIrc got a message %v", line)
+	jstr, err := json.Marshal(line)
+	if err == nil {
+		bot.redisClient.Publish("FROMIRC", string(jstr))
+	}
 }
 
+type FromRedisLine struct {
+	To      string
+	Message string // todo: turn into a list of messages
+	Type    string
+}
+
+const (
+	PRIVMSG = "PRIVMSG"
+	ACTION  = "ACTION"
+	CTCP    = "CTCP"
+	RAW     = "RAW"
+)
+
 func (bot *Botter) ToIrc(message string) {
-	fmt.Printf("TOIRC got a message, so special! %+v", message)
-	bot.Privmsg("#moo", message)
-	/*
-	  // "publish TOIRC "+ JSON.stringify({Type:"privmsg", To:"#moo", Message:"a message", Command:""}).replace(/"/gi, '\\"');
-	  var cmd FromRedis
-	  err := json.Unmarshal([]byte(msg.Message), &cmd)
-	  if err == nil {
-	    fmt.Printf("cmd %+v\n", cmd)
-	    switch (cmd.Type) {
-	      case "privmsg":
-	        bot.Cmd("PRIVMSG %s :%s", cmd.To, cmd.Message)
-	      case "action":
-	        bot.Cmd("PRIVMSG %s :\u0001ACTION%s\u0001", cmd.To, cmd.Message)
-	      case "ctcp":
-	        bot.Cmd("PRIVMSG %s :\u0001%s\u0001", cmd.To, cmd.Message)
-	      case "raw":
-	        bot.Cmd("%s", cmd.Command)
-	    }
-	  }
-	*/
+	//bot.Privmsg("#moo", message)
+	var fromRedisLine FromRedisLine
+	err := json.Unmarshal([]byte(message), &fromRedisLine)
+	fmt.Printf("error %+v", err)
+	fmt.Printf("fromRedisLine: %+v", fromRedisLine)
+	if err == nil {
+		switch fromRedisLine.Type {
+		case PRIVMSG:
+			// maybe make privmsg struct?
+			fmt.Printf("privmsg %+v", fromRedisLine)
+			bot.Privmsg(fromRedisLine.To, fromRedisLine.Message)
+		case ACTION:
+			fmt.Printf("action %+v", fromRedisLine)
+		case CTCP:
+			fmt.Printf("ctcp %+v", fromRedisLine)
+		case RAW:
+			fmt.Printf("raw %+v", fromRedisLine)
+		}
+	}
+}
+
+/*
+	Nick, Ident, Host, Src string
+	  Cmd, Raw               string
+	  Args                   []string
+	  Time                   time.Time
+*/
+type ToRedisLine struct {
+	Nick, Ident, Host, Src string
+	Cmd, Raw               string
+	Args                   []string
+	Time                   time.Time
+}
+
+func CreateRedisLine(line *irc.Line) *ToRedisLine {
+	m := &ToRedisLine{
+		Nick:  line.Nick,
+		Ident: line.Ident,
+		Host:  line.Host,
+		Src:   line.Src,
+		Cmd:   line.Cmd,
+		Raw:   line.Raw,
+		Args:  line.Args,
+		Time:  line.Time,
+	}
+	return m
 }
