@@ -12,22 +12,51 @@ import (
 	"time"
 )
 
+type IniConfig struct {
+	channel string
+	nick    string
+	server  string
+	port    string
+	fromirc string
+	toirc   string
+}
+
 func main() {
-	if len(os.Args) > 1 {
-		fmt.Printf("has args %+v", os.Args)
+	// fix this horrible nested error checking
+	if len(os.Args) != 2 {
+		panic("Provide an ini file as the second run parameter")
+	} else {
 		iniconfig, err := ini.LoadFile(os.Args[1])
-		if err == nil {
-			fmt.Printf("file %+v", iniconfig)
-			//file["section"]
+		if err != nil {
+			panic("Unable to load config file")
+		} else {
+			ininick, ok := iniconfig.Get("bot", "nick")
+			if !ok {
+				panic("Invalid config")
+			} else {
+				inichannel, _ := iniconfig.Get("bot", "channel")
+				iniserver, _ := iniconfig.Get("bot", "server")
+				iniport, _ := iniconfig.Get("bot", "port")
+				inifromirc, _ := iniconfig.Get("bot", "fromirc")
+				initoirc, _ := iniconfig.Get("bot", "toirc")
+				cfg := &IniConfig{
+					channel: inichannel,
+					server:  iniserver,
+					port:    iniport,
+					nick:    ininick,
+					toirc:   initoirc,
+					fromirc: inifromirc,
+				}
+				fmt.Printf("cfg %+v\n", cfg)
+				var logger logging.Logger = stdoutLogger{}
+				logging.SetLogger(logger)
+				logging.Debug("Launching botter")
+				botter := Create(cfg)
+				botter.Run()
+			}
 		}
 	}
-	// name, ok := file.Get("section", "value")
-	panic("oh noes")
-	var logger logging.Logger = stdoutLogger{}
-	logging.SetLogger(logger)
-	logging.Debug("Launching botter")
-	botter := Create()
-	botter.Run()
+
 }
 
 type stdoutLogger struct{}
@@ -47,6 +76,7 @@ type Bot interface {
 }
 
 type Botter struct {
+	iniconfig   *IniConfig
 	Config      *irc.Config
 	connection  *irc.Conn
 	reconnect   bool
@@ -55,18 +85,20 @@ type Botter struct {
 	redisPubSub *redis.PubSub
 }
 
-func Create() Bot {
+func Create(iniconfig *IniConfig) Bot {
 	logging.Debug("creating botter")
 
 	cfg := irc.NewConfig("tobog")
 	cfg.SSL = false
-	cfg.Server = "localhost:6668"
-	//cfg.NewNick = func(n string) string { return n + "^" }
+	fmt.Printf("create got iniconfig %+v\n", iniconfig)
+	cfg.Server = fmt.Sprintf("%s:%s", iniconfig.server, iniconfig.port) //"localhost:6668"
+	// cfg.NewNick = func(n string) string { return n + "^" }
 	cfg.PingFreq = 30 * time.Second
 	cfg.Timeout = 120 * time.Second
 	connection := irc.Client(cfg)
 
 	bot := &Botter{
+		iniconfig:  iniconfig,
 		quit:       make(chan bool),
 		connection: connection,
 		reconnect:  true,
@@ -76,20 +108,19 @@ func Create() Bot {
 	connection.EnableStateTracking()
 
 	connection.HandleFunc(irc.CONNECTED, func(conn *irc.Conn, line *irc.Line) {
-		fmt.Printf("Connected to %s", cfg.Server)
-		fmt.Printf("joining channels")
-		conn.Join("#moo")
-		conn.Join("#traversecity")
+		fmt.Printf("Connected to %s\n", cfg.Server)
+		fmt.Printf("joining channels\n")
+		conn.Join(iniconfig.channel) // todo figure out multi joins
 	})
 
 	connection.HandleFunc(irc.DISCONNECTED, func(conn *irc.Conn, line *irc.Line) {
-		fmt.Printf("Disconncted from %s", cfg.Server)
-		fmt.Printf("Reconnecting...")
+		fmt.Printf("Disconncted from %s\n", cfg.Server)
+		fmt.Printf("Reconnecting...\n")
 		bot.quit <- true
 	})
 
 	connection.HandleFunc(irc.PRIVMSG, func(conn *irc.Conn, line *irc.Line) {
-		fmt.Printf("PRIVMSG : %+v", line.Raw)
+		fmt.Printf("PRIVMSG : %+v\n", line.Raw)
 		m := CreateRedisLine(line)
 		bot.FromIrc(m)
 	})
@@ -102,7 +133,7 @@ func Create() Bot {
 func (bot *Botter) Run() {
 	for bot.reconnect {
 		if err := bot.Connection().Connect(); err != nil {
-			fmt.Printf("Error connecting: ", err)
+			fmt.Printf("Error connecting: %v\n", err)
 			time.Sleep(time.Minute)
 			continue
 		}
@@ -125,9 +156,10 @@ func (bot *Botter) Redis() {
 	// todo: connection error handling.  unable to connect/reconnect
 	var client *redis.Client
 	client = redis.NewTCPClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: "localhost:6379", //todo put in ini file
 	})
-	client.Publish("FROMIRC", "meeeeh moo")
+	fmt.Printf("from irc name %+v", bot.iniconfig.fromirc)
+	//client.Publish(bot.iniconfig.fromirc, "meeeeh moo")
 
 	bot.redisClient = client
 	go bot.RedisPubSub(client)
@@ -137,14 +169,14 @@ func (bot *Botter) RedisPubSub(client *redis.Client) {
 	pubsub := client.PubSub()
 	defer pubsub.Close()
 
-	err := pubsub.Subscribe("TOIRC")
+	err := pubsub.Subscribe(bot.iniconfig.toirc)
 	if err != nil {
 		panic("oh hamburgers")
 	}
 
 	for {
 		msg, err := pubsub.Receive()
-		fmt.Printf("message from redis %+v err %+v", msg, err)
+		fmt.Printf("message from redis %+v err %+v\n", msg, err)
 		if err == nil {
 			switch msg.(type) {
 			case *redis.Message:
@@ -155,10 +187,10 @@ func (bot *Botter) RedisPubSub(client *redis.Client) {
 }
 
 func (bot *Botter) FromIrc(line *ToRedisLine /*message string*/) {
-	fmt.Printf("FromIrc got a message %v", line)
+	fmt.Printf("FromIrc got a message %v\n", line)
 	jstr, err := json.Marshal(line)
 	if err == nil {
-		bot.redisClient.Publish("FROMIRC", string(jstr))
+		bot.redisClient.Publish(bot.iniconfig.fromirc, string(jstr))
 	}
 }
 
@@ -176,33 +208,27 @@ const (
 )
 
 func (bot *Botter) ToIrc(message string) {
-	//bot.Privmsg("#moo", message)
 	var fromRedisLine FromRedisLine
 	err := json.Unmarshal([]byte(message), &fromRedisLine)
-	fmt.Printf("error %+v", err)
-	fmt.Printf("fromRedisLine: %+v", fromRedisLine)
-	if err == nil {
+	if err != nil {
+		fmt.Printf("error %+v\n", err)
+	} else {
+		fmt.Printf("fromRedisLine: %+v\n", fromRedisLine)
 		switch fromRedisLine.Type {
 		case PRIVMSG:
 			// maybe make privmsg struct?
-			fmt.Printf("privmsg %+v", fromRedisLine)
+			fmt.Printf("privmsg %+v\n", fromRedisLine)
 			bot.Privmsg(fromRedisLine.To, fromRedisLine.Message)
 		case ACTION:
-			fmt.Printf("action %+v", fromRedisLine)
+			fmt.Printf("action %+v\n", fromRedisLine)
 		case CTCP:
-			fmt.Printf("ctcp %+v", fromRedisLine)
+			fmt.Printf("ctcp %+v\n", fromRedisLine)
 		case RAW:
-			fmt.Printf("raw %+v", fromRedisLine)
+			fmt.Printf("raw %+v\n", fromRedisLine)
 		}
 	}
 }
 
-/*
-	Nick, Ident, Host, Src string
-	  Cmd, Raw               string
-	  Args                   []string
-	  Time                   time.Time
-*/
 type ToRedisLine struct {
 	Nick, Ident, Host, Src string
 	Cmd, Raw               string
